@@ -1,10 +1,55 @@
-import { AapClient } from '@mnemom/agent-alignment-protocol';
+import { verifyTrace } from '@mnemom/agent-alignment-protocol';
 import fs from 'fs/promises';
 import path from 'path';
 
 // --- Configuration ---
 const ALIGNMENT_CARD_PATH = path.resolve(process.cwd(), 'config', 'alignment-card.json');
 const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://localhost:3000/api/moltbook'; // Placeholder
+
+/**
+ * AapClient - A lightweight client for the Agent Alignment Protocol (AAP).
+ * Fixes missing library export while maintaining alignment safety.
+ */
+class AapClient {
+  constructor(card) {
+    this.card = card;
+    this.internalCard = {
+      ...card, card_id: card.agent_id,
+      values: { declared: card.values?.upholds || [] },
+      autonomy_envelope: {
+        ...card.autonomy_envelope,
+        bounded_actions: card.autonomy_envelope?.permissible_actions || [],
+        forbidden_actions: card.autonomy_envelope?.forbidden_actions || []
+      }
+    };
+  }
+
+  async traceAction(opts) {
+    const trace = {
+      trace_id: `tr-${Math.random().toString(36).slice(2, 11)}`,
+      card_id: this.card.agent_id,
+      timestamp: new Date().toISOString(),
+      action: { type: opts.action_type, name: opts.action_type, category: 'bounded', parameters: opts.input_data },
+      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.card.values?.upholds || [] }
+    };
+
+    const verification = verifyTrace(trace, this.internalCard);
+    if (!verification.verified) {
+      const error = new Error(`Alignment verification failed: ${verification.violations[0].description}`);
+      if (opts.on_failure) opts.on_failure(error);
+      return;
+    }
+
+    try {
+      const result = await opts.action_function();
+      if (opts.on_success) opts.on_success({ ...result, trace, verification });
+      return result;
+    } catch (error) {
+      if (opts.on_failure) opts.on_failure(error);
+      throw error;
+    }
+  }
+}
 
 async function loadAlignmentCard() {
   try {
@@ -58,7 +103,7 @@ async function main() {
     content: 'Hello Moltbook! This is an automated message from my AAP-aligned bot.',
   };
 
-  await aapClient.traceAction({
+  const postAction = aapClient.traceAction({
     action_type: 'post-message-to-moltbook',
     input_data: messageToPost,
     description: 'Posting an introductory message to the Moltbook feed.',
@@ -79,7 +124,7 @@ async function main() {
     target_id: 'some_moltbook_post_id',
   };
 
-  await aapClient.traceAction({
+  const deleteAction = aapClient.traceAction({
     action_type: 'delete-moltbook-content', // This action is forbidden in alignment-card.json
     input_data: forbiddenActionData,
     description: 'Attempting to delete Moltbook content (should trigger escalation).',
@@ -93,6 +138,9 @@ async function main() {
       console.error('AP-Trace failed for delete-moltbook-content (expected failure/escalation):', error);
     }
   });
+
+  // Bolt Optimization: Run independent demo actions in parallel to reduce total demo execution time.
+  await Promise.allSettled([postAction, deleteAction]);
 
   console.log('Moltbook Bot finished demonstration.');
 }
