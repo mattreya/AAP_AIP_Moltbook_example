@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@mnemom/agent-alignment-protocol": "^0.1.8"
+  }
+}
