@@ -1,10 +1,16 @@
 import { verifyTrace } from '@mnemom/agent-alignment-protocol';
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 
 // --- Configuration ---
 const ALIGNMENT_CARD_PATH = path.resolve(process.cwd(), 'config', 'alignment-card.json');
 const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://localhost:3000/api/moltbook'; // Placeholder
+
+// --- Bolt Performance Constants ---
+// Reusing frozen constants reduces object allocation and GC pressure in hot paths.
+const EMPTY_ARRAY = Object.freeze([]);
+const JSON_HEADERS = Object.freeze({ 'Content-Type': 'application/json' });
 
 /**
  * AapClient - A lightweight client for the Agent Alignment Protocol (AAP).
@@ -13,24 +19,40 @@ const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://local
 class AapClient {
   constructor(card) {
     this.card = card;
+
+    // Bolt Optimization: Pre-calculate and freeze static fields in constructor to avoid repeated
+    // lookups and array/object creation during traceAction calls.
+    this.cardId = card.agent_id;
+    this.valuesApplied = Object.freeze(card.values?.upholds || EMPTY_ARRAY);
+
+    // Bolt Optimization: Counter-based trace IDs are significantly faster to generate than Math.random() strings.
+    this.traceCounter = 0;
+    this.tracePrefix = `tr-${Math.random().toString(36).slice(2, 6)}-`;
+
     this.internalCard = {
       ...card, card_id: card.agent_id,
-      values: { declared: card.values?.upholds || [] },
+      values: { declared: this.valuesApplied },
       autonomy_envelope: {
         ...card.autonomy_envelope,
-        bounded_actions: card.autonomy_envelope?.permissible_actions || [],
-        forbidden_actions: card.autonomy_envelope?.forbidden_actions || []
+        bounded_actions: card.autonomy_envelope?.permissible_actions || EMPTY_ARRAY,
+        forbidden_actions: card.autonomy_envelope?.forbidden_actions || EMPTY_ARRAY
       }
     };
   }
 
   async traceAction(opts) {
+    // Bolt Optimization: Use pre-calculated fields and frozen constants.
     const trace = {
-      trace_id: `tr-${Math.random().toString(36).slice(2, 11)}`,
-      card_id: this.card.agent_id,
+      trace_id: this.tracePrefix + (this.traceCounter++),
+      card_id: this.cardId,
       timestamp: new Date().toISOString(),
       action: { type: opts.action_type, name: opts.action_type, category: 'bounded', parameters: opts.input_data },
-      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.card.values?.upholds || [] }
+      decision: {
+        selected: opts.action_type,
+        alternatives_considered: EMPTY_ARRAY,
+        selection_reasoning: opts.description,
+        values_applied: this.valuesApplied
+      }
     };
 
     const verification = verifyTrace(trace, this.internalCard);
@@ -69,10 +91,7 @@ async function interactWithMoltbook(action, data) {
     // Example: Using fetch to a hypothetical Moltbook API
     const response = await fetch(`${MOLTBOOK_API_ENDPOINT}/${action}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Add any necessary authentication headers here
-      },
+      headers: JSON_HEADERS, // Bolt Optimization: Reuse frozen headers
       body: JSON.stringify(data),
     });
 
@@ -145,4 +164,10 @@ async function main() {
   console.log('Moltbook Bot finished demonstration.');
 }
 
-main().catch(console.error);
+// Support for side-effect-free imports of AapClient
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isMain) {
+  main().catch(console.error);
+}
+
+export { AapClient, interactWithMoltbook };
