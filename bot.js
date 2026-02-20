@@ -1,18 +1,28 @@
 import { verifyTrace } from '@mnemom/agent-alignment-protocol';
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 // --- Configuration ---
 const ALIGNMENT_CARD_PATH = path.resolve(process.cwd(), 'config', 'alignment-card.json');
 const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://localhost:3000/api/moltbook'; // Placeholder
 
+// Bolt Optimization: Frozen constants for reuse to reduce GC pressure and allocation time.
+const EMPTY_ARRAY = Object.freeze([]);
+const DEFAULT_HEADERS = Object.freeze({ 'Content-Type': 'application/json' });
+
 /**
  * AapClient - A lightweight client for the Agent Alignment Protocol (AAP).
  * Fixes missing library export while maintaining alignment safety.
  */
-class AapClient {
+export class AapClient {
   constructor(card) {
     this.card = card;
+    // Bolt Optimization: Pre-calculate and freeze constant fields to avoid overhead in traceAction.
+    this.cardId = card.agent_id;
+    this.valuesApplied = Object.freeze([...(card.values?.upholds || [])]);
+    this.traceCounter = 0;
+
     this.internalCard = {
       ...card, card_id: card.agent_id,
       values: { declared: card.values?.upholds || [] },
@@ -25,12 +35,13 @@ class AapClient {
   }
 
   async traceAction(opts) {
+    // Bolt Optimization: Use a counter for trace_id and reuse frozen constants.
     const trace = {
-      trace_id: `tr-${Math.random().toString(36).slice(2, 11)}`,
-      card_id: this.card.agent_id,
+      trace_id: `tr-${++this.traceCounter}`,
+      card_id: this.cardId,
       timestamp: new Date().toISOString(),
       action: { type: opts.action_type, name: opts.action_type, category: 'bounded', parameters: opts.input_data },
-      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.card.values?.upholds || [] }
+      decision: { selected: opts.action_type, alternatives_considered: EMPTY_ARRAY, selection_reasoning: opts.description, values_applied: this.valuesApplied }
     };
 
     const verification = verifyTrace(trace, this.internalCard);
@@ -67,12 +78,10 @@ async function interactWithMoltbook(action, data) {
   // For demonstration, we'll simulate a successful API call.
   try {
     // Example: Using fetch to a hypothetical Moltbook API
+    // Bolt Optimization: Reuse pre-defined frozen headers.
     const response = await fetch(`${MOLTBOOK_API_ENDPOINT}/${action}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Add any necessary authentication headers here
-      },
+      headers: DEFAULT_HEADERS,
       body: JSON.stringify(data),
     });
 
@@ -145,4 +154,7 @@ async function main() {
   console.log('Moltbook Bot finished demonstration.');
 }
 
-main().catch(console.error);
+// Bolt Optimization: Only run main if this file is executed directly.
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  main().catch(console.error);
+}
