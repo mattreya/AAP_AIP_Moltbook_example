@@ -6,46 +6,63 @@ import path from 'path';
 const ALIGNMENT_CARD_PATH = path.resolve(process.cwd(), 'config', 'alignment-card.json');
 const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://localhost:3000/api/moltbook'; // Placeholder
 
+const EMPTY_ARRAY = [];
+const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+};
+
 /**
  * AapClient - A lightweight client for the Agent Alignment Protocol (AAP).
  * Fixes missing library export while maintaining alignment safety.
  */
 class AapClient {
   constructor(card) {
-    this.card = card;
+    this.cardId = card.agent_id;
+    this.valuesApplied = card.values?.upholds || EMPTY_ARRAY;
+    // Pre-calculate internalCard to avoid reconstruction on every verification call
     this.internalCard = {
-      ...card, card_id: card.agent_id,
-      values: { declared: card.values?.upholds || [] },
+      ...card,
+      card_id: this.cardId,
+      values: { declared: this.valuesApplied },
       autonomy_envelope: {
         ...card.autonomy_envelope,
-        bounded_actions: card.autonomy_envelope?.permissible_actions || [],
-        forbidden_actions: card.autonomy_envelope?.forbidden_actions || []
+        bounded_actions: card.autonomy_envelope?.permissible_actions || EMPTY_ARRAY,
+        forbidden_actions: card.autonomy_envelope?.forbidden_actions || EMPTY_ARRAY
       }
     };
+    this.traceCounter = 0;
   }
 
   async traceAction(opts) {
+    const { action_type, input_data, description, action_function, on_success, on_failure } = opts;
+
+    // Bolt Optimization: Use a counter-based trace_id and pre-calculated fields to reduce allocation and property access.
     const trace = {
-      trace_id: `tr-${Math.random().toString(36).slice(2, 11)}`,
-      card_id: this.card.agent_id,
+      trace_id: `tr-${++this.traceCounter}`,
+      card_id: this.cardId,
       timestamp: new Date().toISOString(),
-      action: { type: opts.action_type, name: opts.action_type, category: 'bounded', parameters: opts.input_data },
-      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.card.values?.upholds || [] }
+      action: { type: action_type, name: action_type, category: 'bounded', parameters: input_data },
+      decision: {
+        selected: action_type,
+        alternatives_considered: EMPTY_ARRAY,
+        selection_reasoning: description,
+        values_applied: this.valuesApplied
+      }
     };
 
     const verification = verifyTrace(trace, this.internalCard);
     if (!verification.verified) {
       const error = new Error(`Alignment verification failed: ${verification.violations[0].description}`);
-      if (opts.on_failure) opts.on_failure(error);
+      if (on_failure) on_failure(error);
       return;
     }
 
     try {
-      const result = await opts.action_function();
-      if (opts.on_success) opts.on_success({ ...result, trace, verification });
+      const result = await action_function();
+      if (on_success) on_success({ ...result, trace, verification });
       return result;
     } catch (error) {
-      if (opts.on_failure) opts.on_failure(error);
+      if (on_failure) on_failure(error);
       throw error;
     }
   }
@@ -66,13 +83,10 @@ async function interactWithMoltbook(action, data) {
   // In a real scenario, this would be a call to the Moltbook API.
   // For demonstration, we'll simulate a successful API call.
   try {
-    // Example: Using fetch to a hypothetical Moltbook API
+    // Bolt Optimization: Reuse a constant header object to avoid redundant allocations.
     const response = await fetch(`${MOLTBOOK_API_ENDPOINT}/${action}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Add any necessary authentication headers here
-      },
+      headers: JSON_HEADERS,
       body: JSON.stringify(data),
     });
 
