@@ -6,6 +6,17 @@ import path from 'path';
 const ALIGNMENT_CARD_PATH = path.resolve(process.cwd(), 'config', 'alignment-card.json');
 const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://localhost:3000/api/moltbook'; // Placeholder
 
+// Performance Optimization: Use a session-prefixed counter for faster trace ID generation
+// than Math.random().toString(36), which involves repeated string slicing and floating point math.
+const SESSION_ID = Math.random().toString(36).slice(2, 7);
+let traceCounter = 0;
+
+// Performance Optimization: Use a frozen constant for common headers to avoid
+// repeated object creation and property assignment in every API request.
+const JSON_HEADERS = Object.freeze({
+  'Content-Type': 'application/json',
+});
+
 /**
  * AapClient - A lightweight client for the Agent Alignment Protocol (AAP).
  * Fixes missing library export while maintaining alignment safety.
@@ -13,9 +24,14 @@ const MOLTBOOK_API_ENDPOINT = process.env.MOLTBOOK_API_ENDPOINT || 'http://local
 class AapClient {
   constructor(card) {
     this.card = card;
+    // Performance Optimization: Pre-calculate cardId and valuesApplied to avoid
+    // repeated property lookups and optional chaining during trace generation.
+    this.cardId = card.agent_id;
+    this.valuesApplied = card.values?.upholds || [];
+
     this.internalCard = {
-      ...card, card_id: card.agent_id,
-      values: { declared: card.values?.upholds || [] },
+      ...card, card_id: this.cardId,
+      values: { declared: this.valuesApplied },
       autonomy_envelope: {
         ...card.autonomy_envelope,
         bounded_actions: card.autonomy_envelope?.permissible_actions || [],
@@ -26,11 +42,11 @@ class AapClient {
 
   async traceAction(opts) {
     const trace = {
-      trace_id: `tr-${Math.random().toString(36).slice(2, 11)}`,
-      card_id: this.card.agent_id,
+      trace_id: `tr-${SESSION_ID}-${++traceCounter}`,
+      card_id: this.cardId,
       timestamp: new Date().toISOString(),
       action: { type: opts.action_type, name: opts.action_type, category: 'bounded', parameters: opts.input_data },
-      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.card.values?.upholds || [] }
+      decision: { selected: opts.action_type, alternatives_considered: [], selection_reasoning: opts.description, values_applied: this.valuesApplied }
     };
 
     const verification = verifyTrace(trace, this.internalCard);
@@ -69,10 +85,7 @@ async function interactWithMoltbook(action, data) {
     // Example: Using fetch to a hypothetical Moltbook API
     const response = await fetch(`${MOLTBOOK_API_ENDPOINT}/${action}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Add any necessary authentication headers here
-      },
+      headers: JSON_HEADERS,
       body: JSON.stringify(data),
     });
 
